@@ -36,7 +36,7 @@ reqInfo = '''
   <FIRMUPDATETOOLINFO>
     <FIRMCATEGORY></FIRMCATEGORY>
     <OS>LINUX</OS>
-    <INSPECTMODE>1</INSPECTMODE>
+    <INSPECTMODE></INSPECTMODE>
   </FIRMUPDATETOOLINFO>
   <FIRMUPDATEINFO>
     <MODELINFO>
@@ -92,25 +92,70 @@ input('Press Ctrl-C to exit or Enter to continue...')
 
 # Get SNMP data
 def snmp_get(ip, community):
-  print('Getting SNMP data from printer at %s...' % args.ip)
+  print('Getting SNMP data from printer at %s...' % ip)
   sys.stdout.flush()
-
   cg = cmdgen.CommandGenerator()
   error, status, index, table = cg.nextCmd(
-    cmdgen.CommunityData(args.community),
-    cmdgen.UdpTransportTarget((args.ip, 161)),
+    cmdgen.CommunityData(community),
+    cmdgen.UdpTransportTarget((ip, 161)),
     '1.3.6.1.4.1.2435.2.4.3.99.3.1.6.1.2')
-
   print('done')
-
   if error: raise Exception(error)
   if status:
     raise Exception('ERROR: %s at %s' % (
       status.prettyPrint(), index and table[-1][int(index) - 1] or '?'))
   return table
 
-table = snmp_get(args.ip, args.community)
+# Send Universal Exit Language (UEL) cmd, then INFO cmd, then UEL cmd again
+# Receive INFO response:
+#   @PJL INFO BRFIRMWARE<CR><LF>
+#   data1<CR><LF>
+#   data2<CR><LF>
+#   ...
+#   <FF>
+def pjl_get(ip):
+  print('Getting PJL data from printer at %s...' % ip)
+  MSGLEN = 1024
+  uel_cmd = b'\x1b%-12345X'
+  info_cmd = b'@PJL INFO BRFIRMWARE\r\n'
+  pjl_cmd = uel_cmd + info_cmd + uel_cmd
+  ai = socket.getaddrinfo(ip, 9100, proto=socket.SOL_TCP)[0]
+  try:
+    with socket.socket(ai[0], ai[1], ai[2]) as sock:
+      sock.connect(ai[4])
+      sock.sendall(pjl_cmd)
+      chunks = []
+      bytes_read = 0
+      # Read response until form-feed character
+      while bytes_read < MSGLEN:
+        chunk = sock.recv(min(MSGLEN - bytes_read, 2048))
+        if chunk == b'':
+          raise RuntimeError('socket connection broken')
+        chunks.append(chunk)
+        bytes_read = bytes_read + len(chunk)
+        if b'\f' in chunk:
+          break
+  except Exception:
+    print('Error requesting @PJL INFO')
+    raise
+  response = b''.join(chunks).decode('ascii')
+  # Force response into expected format
+  responselines = response.splitlines(keepends=True)
+  table = [('',value) for value in responselines]
+  return [table]
 
+def fetch_printer_info(ip, community):
+  try:
+    return snmp_get(ip, community)
+  except Exception as e:
+    print('Failed to fetch info via SNMP:', e)
+  try:
+    return pjl_get(ip)
+  except Exception as e:
+    print('Failed to fetch info via PJL:', e)
+  raise RuntimeError('Could not fetch printer info')
+
+table = fetch_printer_info(args.ip, args.community)
 # Process SNMP data
 serial   = None
 model    = None
@@ -123,11 +168,9 @@ if args.verbose: print(table)
 for row in table:
   for name, value in row:
     value = str(value)
-
     if value.find('=') != -1:
       name, value = value.split('=')
       value = value.strip(' "\r\n')
-
       if name == 'MODEL':  model  = value
       if name == 'SERIAL': serial = value
       if name == 'SPEC':   spec   = value
@@ -151,13 +194,11 @@ print('   firmwares')
 
 for entry in firmInfo:
   print('    category = %(cat)s, version = %(version)s' % entry)
-
 print()
 
 def build_request(serial, model, spec, cat, version, inspectMode):
   # Build XML request info
   xml = ET.ElementTree(ET.fromstring(reqInfo))
-
   # At least for MFC-J4510DW M1405200717:EFAC (see Internet dumps)
   # and MFC-J4625DW, and MFC-J4420DW
   # this element's value is *not* equal to per-firmware cat[egory] value
@@ -169,59 +210,66 @@ def build_request(serial, model, spec, cat, version, inspectMode):
   #  From response dump:
   #     <ID>FIRM</ID> <NAME>MAIN</NAME>
   #
-
   e = xml.find('FIRMUPDATETOOLINFO/FIRMCATEGORY')
   e.text = cat if cat != 'FIRM' else 'MAIN'
-
+  e = xml.find('FIRMUPDATETOOLINFO/INSPECTMODE')
+  e.text = inspectMode
   modelInfo = xml.find('FIRMUPDATEINFO/MODELINFO')
   modelInfo.find('SELIALNO').text = serial
   modelInfo.find('NAME').text = model
   modelInfo.find('SPEC').text = spec
-
   firm = modelInfo.find('FIRMINFO/FIRM')
   ET.SubElement(firm, 'ID').text = cat if cat != 'IFAX' else 'MAIN'
   ET.SubElement(firm, 'VERSION').text = version
-
   return ET.tostring(xml.getroot(), encoding = 'utf8')
+
+def request_firmware(requestInfo):
+  # Request firmware data
+  url = 'https://firmverup.brother.co.jp/'
+  url += 'kne_bh7_update_nt_ssl/ifax2.asmx/fileUpdate'
+  hdrs = {'Content-Type': 'text/xml'}
+  print('Looking up printer firmware info at vendor server...')
+  sys.stdout.flush()
+  req = urllib.request.Request(url, requestInfo, hdrs)
+  response = urllib.request.urlopen(req)
+  response = response.read()
+  if args.verbose: print('response: %s' % response)
+  return response
 
 def update_firmware(cat, version):
   global args
   print('Updating %s version %s' % (cat, version))
 
-  requestInfo = build_request(serial, model, spec, cat, version, inspectMode)
-  if args.verbose: print('request: %s' % requestInfo)
-
-  # Request firmware data
-  url = 'https://firmverup.brother.co.jp/'
-  url += 'kne_bh7_update_nt_ssl/ifax2.asmx/fileUpdate'
-  hdrs = {'Content-Type': 'text/xml'}
-
-  print('Looking up printer firmware info at vendor server...')
-  sys.stdout.flush()
-
-  req = urllib.request.Request(url, requestInfo, hdrs)
-  response = urllib.request.urlopen(req)
-  response = response.read()
-
-  print('done')
-
-  if args.verbose: print('response: %s' % response)
-
-  # Parse response
-  xml = ET.fromstring(response)
-
-  # Check version
-  versionCheck = xml.find('FIRMUPDATEINFO/VERSIONCHECK')
-  if versionCheck is not None and versionCheck.text == '1':
-    print('Firmware already up to date')
+  # Try multiple INSPECTMODE values for request
+  for inspectMode in ('1', '0'):
+    requestInfo = build_request(serial, model, spec, cat, version, inspectMode)
+    if args.verbose: print('request: %s' % requestInfo)
+    response = request_firmware(requestInfo)
+    # Parse response
+    xml = ET.fromstring(response)
+    # Check version
+    versionCheck = xml.find('FIRMUPDATEINFO/VERSIONCHECK')
+    if versionCheck is None:
+      print('No VERSIONCHECK response code found')
+      return
+    if versionCheck.text == '0':
+      print('New firmware available')
+      firmwareURL = xml.find('FIRMUPDATEINFO/PATH')
+      if firmwareURL is None:
+        print('Could not find firmware location in server response')
+      break
+    elif versionCheck.text == '1':
+      print('Firmware already up to date')
+      return
+    elif versionCheck.text == '2':
+      print('Incomplete request XML sent to server')
+    else:
+      print('Unrecognized VERSIONCHECK response code', versionCheck.text)
+  else:
+    print('Failed to find firmware update for', cat, version)
     return
 
   # Get firmware URL
-  firmwareURL = xml.find('FIRMUPDATEINFO/PATH')
-  if firmwareURL is None:
-    print('No firmware update info path found')
-    return
-
   firmwareURL = firmwareURL.text
   filename = firmwareURL.split('/')[-1]
 
