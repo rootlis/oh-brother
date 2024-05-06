@@ -22,7 +22,6 @@ import argparse
 import sys
 import socket
 from ftplib import FTP
-import ssl
 import getpass
 from functools import wraps
 
@@ -150,19 +149,6 @@ for entry in firmInfo:
   print('    category = %(cat)s, version = %(version)s' % entry)
 
 print()
-
-
-# We need SSLv3
-def sslwrap(func):
-  @wraps(func)
-  def bar(*args, **kw):
-    kw['ssl_version'] = ssl.PROTOCOL_TLSv1
-    return func(*args, **kw)
-
-  return bar
-
-ssl.wrap_socket = sslwrap(ssl.wrap_socket)
-
 
 def update_firmware(cat, version):
   global args
