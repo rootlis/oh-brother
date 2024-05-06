@@ -34,8 +34,8 @@ pip install pysnmp
 # What it does
 Currently the script does the following:
 
-  * Query the printer's information via the SNMP protocol.
-  * Print SNMP info to screen.
+  * Fetch printer details via SNMP query or Printer Job Language (PJL) commmand.
+  * Print details to screen.
   * For each firmware type:
     * Query Brother servers for the latest firmware.
     * Download the firmware from Brother.
