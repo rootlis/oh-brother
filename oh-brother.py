@@ -91,21 +91,25 @@ if args.password:
 input('Press Ctrl-C to exit or Enter to continue...')
 
 # Get SNMP data
-print('Getting SNMP data from printer at %s...' % args.ip)
-sys.stdout.flush()
+def snmp_get(ip, community):
+  print('Getting SNMP data from printer at %s...' % args.ip)
+  sys.stdout.flush()
 
-cg = cmdgen.CommandGenerator()
-error, status, index, table = cg.nextCmd(
-  cmdgen.CommunityData(args.community),
-  cmdgen.UdpTransportTarget((args.ip, 161)),
-  '1.3.6.1.4.1.2435.2.4.3.99.3.1.6.1.2')
+  cg = cmdgen.CommandGenerator()
+  error, status, index, table = cg.nextCmd(
+    cmdgen.CommunityData(args.community),
+    cmdgen.UdpTransportTarget((args.ip, 161)),
+    '1.3.6.1.4.1.2435.2.4.3.99.3.1.6.1.2')
 
-print('done')
+  print('done')
 
-if error: raise Exception(error)
-if status:
-  raise Exception('ERROR: %s at %s' % (
-    status.prettyPrint(), index and table[-1][int(index) - 1] or '?'))
+  if error: raise Exception(error)
+  if status:
+    raise Exception('ERROR: %s at %s' % (
+      status.prettyPrint(), index and table[-1][int(index) - 1] or '?'))
+  return table
+
+table = snmp_get(args.ip, args.community)
 
 # Process SNMP data
 serial   = None
@@ -150,11 +154,7 @@ for entry in firmInfo:
 
 print()
 
-def update_firmware(cat, version):
-  global args
-
-  print('Updating %s version %s' % (cat, version))
-
+def build_request(serial, model, spec, cat, version, inspectMode):
   # Build XML request info
   xml = ET.ElementTree(ET.fromstring(reqInfo))
 
@@ -182,8 +182,13 @@ def update_firmware(cat, version):
   ET.SubElement(firm, 'ID').text = cat if cat != 'IFAX' else 'MAIN'
   ET.SubElement(firm, 'VERSION').text = version
 
-  requestInfo = ET.tostring(xml.getroot(), encoding = 'utf8')
+  return ET.tostring(xml.getroot(), encoding = 'utf8')
 
+def update_firmware(cat, version):
+  global args
+  print('Updating %s version %s' % (cat, version))
+
+  requestInfo = build_request(serial, model, spec, cat, version, inspectMode)
   if args.verbose: print('request: %s' % requestInfo)
 
   # Request firmware data
