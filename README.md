@@ -76,3 +76,8 @@ Please feel free to submit a pull-request.
 ## Other options
 An alternate bash script for firmware download can be found
 [here](https://cbompart.wordpress.com/2014/05/26/brother-printer-firmware-part-2/).
+
+## Resources
+  * PJL Reference: https://download.brother.com/welcome/doc002907/Tech_Manual_AD.pdf
+  * BRSUPPLY command: https://kapuablog.wordpress.com/2019/12/18/brother-printers-finding-the-toner-levels/
+  * Brother PJL variable list: https://tosiek.pl/pjl-variables-for-brother-printers/
